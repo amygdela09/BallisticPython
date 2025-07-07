@@ -2,8 +2,6 @@
 
 A command-line ballistic calculator in Python. Get precise firing solutions for long-range shooting by simulating trajectory with environmental factors, custom rifle profiles, and trajectory visualization.
 
-![Solver Demo](https://placehold.co/800x400/1e1e1e/c0c0c0?text=Ballistic+Python+in+Action)
-
 ## Table of Contents
 - [Features](#features)
 - [How It Works](#how-it-works)
