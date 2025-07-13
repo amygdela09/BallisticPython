@@ -80,13 +80,13 @@ Areas for future improvement include:
 
 Challenges and Scope:
 
-Complexity: Each of these features, particularly G7 modeling, spin drift, and sophisticated truing, involves complex mathematical models and careful implementation.
+   Complexity: Each of these features, particularly G7 modeling, spin drift, and sophisticated truing, involves complex mathematical models and careful implementation.
 
-Data Acquisition: Finding accurate drag tables for G7 BCs can be challenging.
+   Data Acquisition: Finding accurate drag tables for G7 BCs can be challenging.
 
-Validation: Rigorous testing against real-world data and other professional solvers would be crucial to ensure accuracy.
+   Validation: Rigorous testing against real-world data and other professional solvers would be crucial to ensure accuracy.
 
-Time Commitment: This would be a project spanning many hours, requiring deep dives into ballistic theory and numerical methods.
+   Time Commitment: This would be a project spanning many hours, requiring deep dives into ballistic theory and numerical methods.
 
 ## License
 
