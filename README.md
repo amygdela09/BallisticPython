@@ -96,3 +96,52 @@ The main input prompt expects data in the following format:
 **Full Example:**
 ```bash
 850 10 270 -5 p
+This command calculates a solution for a target at 850 yards, with a 10 mph wind coming from the left, at a 5-degree downhill angle, and generates a detailed plot.
+
+In-App Commands
+
+At the main prompt, you can also enter the following commands instead of firing data:
+
+    profile: Restarts the rifle profile setup process from the beginning.
+
+    env: Restarts the environmental setup process.
+
+    manage: Opens the profile manager to view or delete saved profiles.
+
+    quit: Exits the program.
+
+Profile Management
+
+Your custom rifle profiles are the heart of this tool. A profile consists of your bullet's data, your scope's adjustment unit (MIL/MOA), and your rifle's zero distance.
+
+    Saving: When you create a new profile using the "Manual Input" option, you will be prompted to save it. Give it a descriptive name (e.g., "My Tikka 6.5CM"), and it will be available the next time you run the script.
+
+    Loading: Saved profiles appear at the top of the selection list when you start the script or use the profile command.
+
+    Deleting: Use the manage command to see a list of your saved profiles and choose one to delete.
+
+    File Location: All profiles are stored in a human-readable rifle_profiles.json file in the same directory as the script. You can manually edit or back up this file.
+
+Contributing
+
+Contributions are welcome! If you have suggestions for new features, improvements to the physics model, or bug fixes, please feel free to open an issue or submit a pull request.
+
+Areas for future improvement include:
+
+    G7 Ballistic Coefficient Support: Implement drag models and calculations for G7 BCs, which are more accurate for modern, long-range projectiles.
+
+    Spin Drift Calculation: Incorporate the effect of bullet spin, which causes a small horizontal deflection over long distances.
+
+    Coriolis Effect: Account for the Earth's rotation impacting projectile trajectory over very long ranges.
+
+    Full Drop Charts/Dope Cards: Generate printable tables of holdovers and windage for various distances.
+
+    BC Estimator Refinement: Develop a more robust and accurate ballistic coefficient estimator based on projectile dimensions and known bullet types.
+
+    Advanced Wind Models: Implement more sophisticated wind inputs (e.g., full value, half value, different wind zones).
+
+    Target Customization: Allow users to define custom target sizes and shapes for hit probability calculations.
+
+License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
