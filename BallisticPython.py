@@ -604,6 +604,11 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
         solution_angle = angle_high # Fallback to the last angle calculated
         print(f"Warning: Solver did not converge to exact tolerance within {0.05}m. Best angle found: {solution_angle:.2f}°")
 
+    # --- Initialize these before the final calculation block ---
+    final_deflection = None
+    trajectory_final = None
+    los_intersections_final = [] # Initialize as an empty list
+
 
     # Once solution_angle is found (or best effort), run trajectory one last time
     if solution_angle is not None:
@@ -616,8 +621,7 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
              print("Target might be beyond bullet's effective range for this configuration.")
              return None, None, None, None
 
-         return solution_angle, final_deflection, trajectory_final, los_intersection_points_final # Return final intersections
-
+         return solution_angle, final_deflection, trajectory_final, los_intersections_final
 
     return None, None, None, None # Return None if the solver fails to converge on a solution
 
