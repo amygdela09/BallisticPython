@@ -266,15 +266,12 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
     hit_ground_before_target_range = False # Flag to track if ground hit occurred before target
 
     # Line of sight for ZEROING: From (0, scope_height_m) to (scope_zero_m, 0)
-    # The slope of this line is (0 - scope_height_m) / (scope_zero_m - 0)
-    # So, LOS height at any x is: scope_height_m + (x * (0 - scope_height_m) / scope_zero_m)
-    # This assumes a flat range for zeroing.
+    # This function defines the specific zeroing LOS that the bullet trajectory should cross.
     def get_zeroing_los_height_at_x(current_x):
         if scope_zero_m == 0: # If zero is at muzzle, LOS is horizontal at scope height
             return scope_height_m
         # LOS is a line from (0, scope_height_m) to (scope_zero_m, 0)
-        # Equation: y - y1 = m(x - x1)
-        # m = (0 - scope_height_m) / (scope_zero_m - 0) = -scope_height_m / scope_zero_m
+        # Equation: y = y1 + m(x - x1) where (x1, y1) = (0, scope_height_m) and m = (0 - scope_height_m) / scope_zero_m
         return scope_height_m + (current_x * (-scope_height_m / scope_zero_m))
 
 
@@ -322,8 +319,9 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
         current_bullet_above_los = y > current_los_y
 
         # Only check for intersection if we've moved beyond a very small distance from muzzle
-        # and if the bullet hasn't hit ground already, and if the LOS itself is valid (not dividing by zero if scope_zero_m is 0)
-        if x > 0.01 and current_bullet_above_los != prev_bullet_above_los: # If status changed
+        # to avoid false positives at the very start where bullet is at scope height and LOS starts there.
+        # Also ensure scope_zero_m is not 0 for this specific LOS calculation (handled in get_zeroing_los_height_at_x).
+        if x > 0.01 and scope_zero_m != 0 and current_bullet_above_los != prev_bullet_above_los: # If status changed
             # Calculate difference between bullet y and LOS y at previous and current points
             diff_prev_y_los = prev_y - get_zeroing_los_height_at_x(prev_x)
             diff_curr_y_los = y - current_los_y
@@ -618,7 +616,8 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
              print("Target might be beyond bullet's effective range for this configuration.")
              return None, None, None, None
 
-         return solution_angle, final_deflection, trajectory_final, los_intersections_final
+         return solution_angle, final_deflection, trajectory_final, los_intersection_points_final # Return final intersections
+
 
     return None, None, None, None # Return None if the solver fails to converge on a solution
 
@@ -749,7 +748,7 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     # This is the line that the bullet intersects at its zero distance.
     if scope_zero_plot > 0:
         zeroing_los_slope = (0 - scope_height_plot) / scope_zero_plot
-    else: # If zero is at or near muzzle, consider LOS horizontal from scope height
+    else: # For 0m zero, treat as horizontal from scope height
         zeroing_los_slope = 0.0
 
     zeroing_los_x_end = max_plot_x
@@ -767,30 +766,67 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
         # Check if this point is close to the defined scope_zero_m
         is_primary_zero = abs(i_x - scope_zero_plot) < (scope_zero_plot * 0.02) or (scope_zero_plot == 0 and i_x < 5 * unit_factor)
         
-        label_str = ''
+        label_str_suffix = '' # Suffix for the label, e.g., "(50yd)"
         if is_primary_zero and marked_zero_count == 0:
-            label_str = f'Primary Zero ({i_x:.0f}{distance_unit_label})'
-            ax.plot(i_x, i_y, 'X', color='darkorange', markersize=12, markeredgewidth=2) # Distinct marker for primary zero
+            label_str_base = 'Primary Zero'
+            marker_color = 'darkorange'
+            marker_size = 12
+            marker_edge = 2
             marked_zero_count += 1
         else:
-            label_str = f'LOS Crossing ({i_x:.0f}{distance_unit_label})'
-            ax.plot(i_x, i_y, 'x', color='darkgreen', markersize=10, markeredgewidth=2) # Standard 'x' for other crossings
+            label_str_base = 'LOS Crossing'
+            marker_color = 'darkgreen'
+            marker_size = 10
+            marker_edge = 2
         
-        # Add text label for each marked point
+        # Add the point
+        ax.plot(i_x, i_y, marker='X', color=marker_color, markersize=marker_size, markeredgewidth=marker_edge)
+        
+        # Add text label for each marked point (without adding to legend multiple times)
         offset_y = (max(traj_y) - min(traj_y) if traj_y else 1) * 0.05 
-        ax.text(i_x, i_y + offset_y, label_str.split('(')[0].strip(),
-                verticalalignment='bottom', horizontalalignment='center', color='darkgreen', fontsize=9)
+        ax.text(i_x, i_y + offset_y, f"{label_str_base} ({i_x:.0f}{distance_unit_label})",
+                verticalalignment='bottom', horizontalalignment='center', color=marker_color, fontsize=9)
 
 
     # --- Labels and Title ---
     ax.set_xlabel(f"Downrange Distance ({distance_unit_label})")
     ax.set_ylabel(f"Height Above Shooter's Ground ({distance_unit_label})")
     ax.set_title("Bullet Trajectory Simulation")
-    # Consolidate duplicate labels for the legend
+    
+    # Handle custom legend entries for X markers separately
+    legend_handles = []
+    legend_labels = []
+
+    # Get handles/labels for lines (existing legend logic)
     handles, labels = ax.get_legend_handles_labels()
-    unique_labels = list(dict.fromkeys(labels))
-    unique_handles = [handles[labels.index(l)] for l in unique_labels]
-    ax.legend(unique_handles, unique_labels)
+    unique_labels_lines = []
+    unique_handles_lines = []
+    # Add unique line labels/handles
+    for h, l in zip(handles, labels):
+        if l not in unique_labels_lines:
+            unique_labels_lines.append(l)
+            unique_handles_lines.append(h)
+    
+    # Add a dummy entry for the primary zero to the legend if not already there
+    # This might add duplicates if the label string is the same as one already printed
+    # Let's ensure the label used in ax.text doesn't conflict with main legend.
+    # Instead of labels from ax.plot, we'll manually add specific ones if needed.
+    
+    # For primary zero, manually add a legend entry if marked
+    if marked_zero_count > 0: # Implies a primary zero was marked
+        # Create a proxy artist for the legend entry for the primary zero
+        proxy_primary_zero = plt.Line2D([0], [0], linestyle='None', marker='X', markersize=12, markeredgewidth=2, color='darkorange')
+        legend_handles.append(proxy_primary_zero)
+        legend_labels.append('Primary Zero')
+    
+    # Create a proxy artist for general LOS crossings
+    proxy_los_crossing = plt.Line2D([0], [0], linestyle='None', marker='x', markersize=10, markeredgewidth=2, color='darkgreen')
+    legend_handles.append(proxy_los_crossing)
+    legend_labels.append('LOS Crossing')
+
+
+    # Combine and show legend
+    ax.legend(unique_handles_lines + legend_handles, unique_labels_lines + legend_labels)
     ax.grid(True)
     
     # --- Adjust Aspect Ratio ---
@@ -807,10 +843,10 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     ax.set_xlim(0, max_plot_x)
     ax.set_ylim(min_y_val, max_y_val)
 
-    # Set y-axis scale at 2:1 ratio to the x-axis
-    # This means one unit on the Y-axis is visually twice as long as one unit on the X-axis.
-    # In Matplotlib, aspect = Y_scale / X_scale. So for Y:X = 2:1, aspect = 2/1 = 2.
-    ax.set_aspect(2, adjustable='box') 
+    # Set y-axis scale at 3:1 ratio to the x-axis
+    # This means one unit on the Y-axis is visually three times longer as one unit on the X-axis.
+    # In Matplotlib, aspect = Y_unit_length / X_unit_length = 3 / 1 = 3.
+    ax.set_aspect(3, adjustable='box') 
     plt.show()
 
 
@@ -895,12 +931,15 @@ def setup_profile(saved_profiles, system_units):
             if selected_family['loads']: # If there are specific loads
                 print(f"\n--- {selected_family['name']} Loads ---")
                 load_choices = {}
-                for key, load_data in selected_family['loads'].items():
-                    load_choices[key] = load_data["name"]
-                    print(f"  {key}: {load_data['name']}")
+                # Create load choices with numeric keys for display
+                load_idx = 1
+                for key_inner, load_data in selected_family['loads'].items():
+                    load_choices[str(load_idx)] = load_data
+                    print(f"  {load_idx}: {load_data['name']}")
+                    load_idx += 1
                 
-                load_choice_key = get_menu_choice("Select specific load: ", load_choices)
-                profile_data = selected_family['loads'][load_choice_key].copy()
+                load_choice_key_str = get_menu_choice("Select specific load: ", load_choices)
+                profile_data = load_choices[load_choice_key_str].copy()
             else: # Should not happen with current structure, but as a fallback
                 print("No specific loads found for this caliber. Please select manual input.")
                 return setup_profile(saved_profiles, system_units) # Re-run setup
@@ -1078,7 +1117,6 @@ def main():
                     if MATPLOTLIB_AVAILABLE:
                         # Pass the barrel_angle_for_zero_m to the plot function.
                         # It's already calculated inside solve_for_angle and used to get los_intersection_points.
-                        # We need to re-calculate it here or pass it from solve_for_angle return.
                         # Recalculating here is fine as it's a fixed value for the profile/env.
                         barrel_angle_for_zero = _find_zero_barrel_angle(derived_profile, air_density, derived_profile['scope_height_m'], derived_profile['scope_zero_m'])
                         plot_trajectory(trajectory_points, solution_angle, derived_profile['scope_height_m'], target_range_m, target_angle_deg, TARGET_HEIGHT_M, derived_profile['scope_zero_m'], los_intersection_points, system_units, barrel_angle_for_zero)
