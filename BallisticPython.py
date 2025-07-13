@@ -275,15 +275,16 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
         # LOS is a line from (0, scope_height_m) to (scope_zero_m, 0)
         # Equation: y - y1 = m(x - x1)
         # m = (0 - scope_height_m) / (scope_zero_m - 0) = -scope_height_m / scope_zero_m
-        # y = scope_height_m + (current_x * (-scope_height_m / scope_zero_m))
-        # y = scope_height_m * (1 - current_x / scope_zero_m)
-        return scope_height_m * (1 - current_x / scope_zero_m)
+        return scope_height_m + (current_x * (-scope_height_m / scope_zero_m))
 
 
     # Variables to track previous state for interpolation for LOS intersections
     prev_x, prev_y = x, y
     prev_los_y = get_zeroing_los_height_at_x(prev_x)
+    # Adjust prev_bullet_above_los for the actual starting point (bullet starts at scope height)
+    # This ensures that the very first intersection (if projectile immediately dips below LOS) is caught.
     prev_bullet_above_los = y > prev_los_y 
+
 
     # --- Wind Components ---
     wind_angle_rad = math.radians(wind_angle_deg)
@@ -322,20 +323,19 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
         current_los_y = get_zeroing_los_height_at_x(x)
         current_bullet_above_los = y > current_los_y
 
-        # Only check for intersection if we've moved beyond the muzzle (x > 0.01)
-        # to avoid false positives at the very start where bullet is at scope height and LOS starts there.
+        # Only check for intersection if we've moved beyond a very small distance from muzzle
+        # and if the bullet hasn't hit ground already, and if the LOS itself is valid (not dividing by zero if scope_zero_m is 0)
         if x > 0.01 and current_bullet_above_los != prev_bullet_above_los: # If status changed
-            # Interpolate intersection point between prev_point and current point
-            # Calculate difference between bullet y and LOS y
-            diff_prev = prev_y - get_zeroing_los_height_at_x(prev_x)
-            diff_curr = y - current_los_y
+            # Calculate difference between bullet y and LOS y at previous and current points
+            diff_prev_y_los = prev_y - get_zeroing_los_height_at_x(prev_x)
+            diff_curr_y_los = y - current_los_y
 
-            if diff_prev * diff_curr < 0: # If signs are different, a crossing occurred
+            if diff_prev_y_los * diff_curr_y_los < 0: # If signs are different, a crossing occurred
                 # Linear interpolation for x
-                lerp_factor = abs(diff_prev) / (abs(diff_prev) + abs(diff_curr))
+                lerp_factor = abs(diff_prev_y_los) / (abs(diff_prev_y_los) + abs(diff_curr_y_los))
                 
                 intersect_x = prev_x + (x - prev_x) * lerp_factor
-                intersect_y = prev_y + (y - prev_y) * lerp_factor # y-value should be close to LOS height at intersect_x
+                intersect_y = prev_y + (y - prev_y) * lerp_factor 
                 los_intersection_points.append((intersect_x, intersect_y))
 
         # --- Physics calculations for next step ---
@@ -387,14 +387,12 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
             
             if last_x < target_range_for_solver_m: # If bullet didn't reach target range
                 if vx > 0: # Only if moving forward
-                    # Use a rough extrapolation (linear + gravity effect over remaining distance)
                     time_to_target = (target_range_for_solver_m - last_x) / vx
                     height_at_target_range = last_y + vy * time_to_target - 0.5 * g * time_to_target**2
                 else: # Not moving forward, effectively didn't reach
                     height_at_target_range = -1000.0 # Large finite negative number
                 hit_ground_before_target_range = True # Bullet did not reach target while in air
             else: # Target range is within or past simulated trajectory, height_at_target_range should already be set.
-                  # As a fallback, use the height of the last point if it's past target.
                   height_at_target_range = last_y
 
 
@@ -403,18 +401,22 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
 
 def _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m):
     """
-    Helper function to find the precise barrel angle required to zero the rifle
-    at scope_zero_m on a flat range (y=0). This is used to define the true LOS for zeroing.
+    Helper function to find the precise barrel angle required for the projectile
+    to hit the ground (y=0) at scope_zero_m, assuming a flat range.
+    This angle is then used to define the true LOS for zeroing.
     """
-    # This is a sub-solver aiming for y=0 at scope_zero_m
-    
-    # Define an inner trajectory function for zeroing
-    def zeroing_trajectory_height(angle):
+    if scope_zero_m <= 0.0: # Cannot zero at or before muzzle
+        return 0.0 # Default to horizontal if invalid zero distance
+
+    def zeroing_error(angle):
         g_const = 9.81
         launch_angle_rad = math.radians(angle)
         vx = profile['velocity_mps'] * math.cos(launch_angle_rad)
         vy = profile['velocity_mps'] * math.sin(launch_angle_rad)
-        x_curr, y_curr = 0.0, scope_height_m # Start at scope height for zeroing
+        
+        # Start at muzzle (0,0) for finding barrel angle to hit ground at zero distance
+        # We want the bullet's *trajectory* from the muzzle to hit ground at scope_zero_m.
+        x_curr, y_curr = 0.0, 0.0 
         
         time_step = 0.005
         
@@ -422,6 +424,7 @@ def _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m):
         while x_curr <= scope_zero_m + 1.0 and y_curr >= -1.0: # Sim slightly past zero or slightly below ground
             v_mag = math.sqrt(vx**2 + vy**2)
             if v_mag == 0: break
+            
             drag_force_mag = 0.5 * air_density * (v_mag**2) * profile['area_m2'] * profile['drag_coefficient']
             
             force_x = -drag_force_mag * (vx / v_mag)
@@ -430,40 +433,55 @@ def _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m):
             vx += (force_x / profile['mass_kg']) * time_step
             vy += (force_y / profile['mass_kg']) * time_step
             
+            x_prev_step, y_prev_step = x_curr, y_curr # Store previous for interpolation
             x_curr += vx * time_step
             y_curr += vy * time_step
             
             # If crossed zero distance, interpolate y
-            if x_curr >= scope_zero_m and (x_curr - vx * time_step) < scope_zero_m:
+            if x_curr >= scope_zero_m and x_prev_step < scope_zero_m:
                 if vx != 0:
-                    ratio = (scope_zero_m - (x_curr - vx * time_step)) / (vx * time_step)
-                    interp_y = (y_curr - vy * time_step) + (vy * time_step) * ratio
-                    return interp_y
+                    ratio = (scope_zero_m - x_prev_step) / (x_curr - x_prev_step)
+                    interp_y = y_prev_step + (y_curr - y_prev_step) * ratio
+                    return interp_y # Return height at scope_zero_m
+                else:
+                    return y_curr # Vertical trajectory at zero distance
+
+            # If hit ground before reaching zero distance
+            if y_curr < 0 and y_prev_step >= 0:
+                return -1000.0 # Indicate it hit ground early
+
+        # If it went past zero, and didn't hit ground (still high)
+        if x_curr > scope_zero_m + 1.0 and y_curr > 0:
+            return y_curr # Return positive height
         
-        # If it hit ground before zero, or went past zero without hitting ground (and still high)
-        if y_curr <= 0: # Hit ground
-            return -1000.0 # Very low, indicate it went below zero point
-        else: # Went past zero, still high
-            return y_curr # Return actual height at end of sim
-    
+        # Default if it just didn't get anywhere or stopped
+        return -1000.0
+
+
     # Use Secant method to find the angle that results in y=0 at scope_zero_m
-    angle_low, angle_high = -2.0, 10.0 # Initial guesses for zeroing angle
+    angle_low, angle_high = 0.0, 5.0 # Typical starting guesses
+
+    # Ensure initial bracket covers positive and negative errors
+    error_low = zeroing_error(angle_low)
+    error_high = zeroing_error(angle_high)
     
-    error_low = zeroing_trajectory_height(angle_low) - 0.0 # Target height is 0 (ground)
-    error_high = zeroing_trajectory_height(angle_high) - 0.0
-    
-    # Basic bracketing attempt for zeroing angle
+    # Simple bracket finding if initial fails
     if error_low * error_high >= 0:
-        # If both are positive, try a lower start angle. If both negative, try higher.
-        if error_low > 0: # Both too high
-            angle_low = -5.0 # Try even lower
-            error_low = zeroing_trajectory_height(angle_low) - 0.0
-        elif error_low < 0: # Both too low
-            angle_high = 15.0 # Try even higher
-            error_high = zeroing_trajectory_height(angle_high) - 0.0
+        found_bracket = False
+        test_angles = [-5.0, -2.0, 0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0]
+        for a1 in test_angles:
+            e1 = zeroing_error(a1)
+            for a2 in [angle for angle in test_angles if angle > a1]:
+                e2 = zeroing_error(a2)
+                if e1 * e2 < 0:
+                    angle_low, error_low = a1, e1
+                    angle_high, error_high = a2, e2
+                    found_bracket = True
+                    break
+            if found_bracket: break
         
-        if error_low * error_high >= 0: # If still not bracketed
-            # print("Warning: Could not robustly bracket zeroing angle.")
+        if not found_bracket:
+            # print("Warning: Could not robustly bracket zeroing angle. Using 0.0 as default.")
             return 0.0 # Fallback to 0 degrees if zero angle cannot be found
 
     for _ in range(50): # Max iterations for zeroing angle solver
@@ -472,7 +490,7 @@ def _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m):
         if error_high == error_low: break # Avoid division by zero
         
         angle_next = angle_high - error_high * (angle_high - angle_low) / (error_high - error_low)
-        error_next = zeroing_trajectory_height(angle_next) - 0.0
+        error_next = zeroing_error(angle_next)
         
         if abs(error_next) < 0.001: # 1mm tolerance for zero
             return angle_next
@@ -490,9 +508,7 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
     # First, calculate the barrel angle required to zero at scope_zero_m on a flat range
     # This is needed to correctly define the true LOS for the zeroing intersections
     barrel_angle_for_zero_m = _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m)
-    if barrel_angle_for_zero_m is None:
-        print("Could not determine barrel angle for zeroing. Solver cannot proceed.")
-        return None, None, None, None
+    # print(f"DEBUG: Barrel angle for zeroing at {scope_zero_m:.0f}m is {barrel_angle_for_zero_m:.3f}°") # Debugging print
 
     # Define a function to find the error (difference from target aim height)
     def get_error_and_reach(angle):
@@ -588,7 +604,7 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
 
     # If loop finished without perfect convergence, take the last calculated angle as the best effort
     if solution_angle is None:
-        solution_angle = angle_high 
+        solution_angle = angle_high # Fallback to the last angle calculated
         print(f"Warning: Solver did not converge to exact tolerance within {0.05}m. Best angle found: {solution_angle:.2f}°")
 
 
@@ -661,7 +677,7 @@ def calculate_hit_probability(moa_accuracy, target_range_m, target_height_m, tar
 #
 # ==============================================================================
 
-def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_range_m, target_angle_deg, target_height_m, scope_zero_m, los_intersection_points, system_units):
+def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_range_m, target_angle_deg, target_height_m, scope_zero_m, los_intersection_points, system_units, barrel_angle_for_zero_m):
     """
     Plots the bullet trajectory, line of sight, barrel angle, and target.
     Accounts for target elevation angle and marks LOS intersections, including zero.
@@ -701,10 +717,16 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
 
 
     # --- Plot the Line of Sight (LOS) ---
-    # LOS starts at (0, scope_height_plot) and aims for target midpoint (target_range_m * unit_factor, target_elevation_at_range_plot + TARGET_MIDPOINT_M * unit_factor).
-    los_angle_rad = math.atan2((target_elevation_at_range_plot + TARGET_MIDPOINT_M * unit_factor - scope_height_plot), (target_range_m * unit_factor))
+    # LOS from scope (0, scope_height_plot) to actual target midpoint
+    los_target_x = target_range_m * unit_factor
+    los_target_y = target_elevation_at_range_plot + TARGET_MIDPOINT_M * unit_factor
+    
+    # Calculate angle for LOS to target
+    los_angle_to_target_rad = math.atan2( (los_target_y - scope_height_plot), los_target_x)
+    
+    # Extend LOS across the plot
     los_end_x = max_plot_x
-    los_end_y = scope_height_plot + math.tan(los_angle_rad) * los_end_x
+    los_end_y = scope_height_plot + math.tan(los_angle_to_target_rad) * los_end_x
     ax.plot([0, los_end_x], [scope_height_plot, los_end_y], color='green', linestyle='--', label='Line of Sight (to target midpoint)')
 
     # --- Plot the Barrel Line ---
@@ -724,10 +746,24 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     ax.plot(target_range_m * unit_factor, target_elevation_at_range_plot + TARGET_MIDPOINT_M * unit_factor, 'o', color='black', markersize=5, label='Target Midpoint')
 
     # --- Mark LOS Intersection Points (Zeros) ---
-    # Convert LOS intersection points for plotting units
-    los_intersection_points_plot = [(p[0] * unit_factor, p[1] * unit_factor) for p in los_intersection_points]
+    # The zeroing LOS is a line from (0, scope_height_plot) to (scope_zero_plot, 0)
+    # This is the LOS that the "zero" refers to.
     
-    # Sort points by x-coordinate for consistent labeling
+    # Calculate the angle of the zeroing LOS
+    if scope_zero_plot > 0:
+        zeroing_los_angle_rad = math.atan2((0 - scope_height_plot), scope_zero_plot)
+    else: # For 0m zero, treat as horizontal from scope
+        zeroing_los_angle_rad = 0.0
+
+    # Extend zeroing LOS for plotting purposes
+    zeroing_los_x_end = max_plot_x
+    zeroing_los_y_end = scope_height_plot + math.tan(zeroing_los_angle_rad) * zeroing_los_x_end
+    
+    ax.plot([0, zeroing_los_x_end], [scope_height_plot, zeroing_los_y_end], color='grey', linestyle='-.', label='Zeroing Line of Sight')
+
+
+    # Mark intersections from calculated_trajectory_with_points
+    los_intersection_points_plot = [(p[0] * unit_factor, p[1] * unit_factor) for p in los_intersection_points]
     los_intersection_points_plot.sort(key=lambda p: p[0])
 
     marked_zero_count = 0
@@ -738,18 +774,16 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
         label_str = ''
         if is_primary_zero and marked_zero_count == 0:
             label_str = f'Primary Zero ({i_x:.0f}{distance_unit_label})'
+            ax.plot(i_x, i_y, 'X', color='darkorange', markersize=12, markeredgewidth=2) # Distinct marker for primary zero
             marked_zero_count += 1
-        elif i_x > 0: # Mark other positive crossings as 'LOS Crossing'
+        else:
             label_str = f'LOS Crossing ({i_x:.0f}{distance_unit_label})'
-        elif i_x <= 0 and marked_zero_count == 0: # If there's an early negative crossing, and primary not marked
-             label_str = f'Initial LOS Crossing ({i_x:.0f}{distance_unit_label})'
-
-        if label_str: # Only add if we have a label
-            ax.plot(i_x, i_y, 'x', color='darkgreen', markersize=10, markeredgewidth=2, label=label_str)
-            # Dynamic offset based on plot height
-            offset_y = (max(traj_y) - min(traj_y) if traj_y else 1) * 0.05 
-            ax.text(i_x, i_y + offset_y, label_str.split('(')[0].strip(),
-                    verticalalignment='bottom', horizontalalignment='center', color='darkgreen', fontsize=9)
+            ax.plot(i_x, i_y, 'x', color='darkgreen', markersize=10, markeredgewidth=2) # Standard 'x' for other crossings
+        
+        # Add text label for each marked point
+        offset_y = (max(traj_y) - min(traj_y) if traj_y else 1) * 0.05 
+        ax.text(i_x, i_y + offset_y, label_str.split('(')[0].strip(),
+                verticalalignment='bottom', horizontalalignment='center', color='darkgreen', fontsize=9)
 
 
     # --- Labels and Title ---
@@ -763,7 +797,7 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     ax.legend(unique_handles, unique_labels)
     ax.grid(True)
     
-    # --- Adjust Aspect Ratio for less exaggeration ---
+    # --- Adjust Aspect Ratio ---
     min_y_val = min(0, min(traj_y) if traj_y else 0, target_elevation_at_range_plot * 1.2 if target_elevation_at_range_plot < 0 else 0, scope_height_plot * 0.5) * 1.1
     max_y_val = max(max(traj_y) if traj_y else 0, scope_height_plot * 1.5, (target_elevation_at_range_plot + target_height_m * unit_factor) * 1.1, target_elevation_at_range_plot * 1.2 if target_elevation_at_range_plot > 0 else 0) * 1.1
 
@@ -777,91 +811,11 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     ax.set_xlim(0, max_plot_x)
     ax.set_ylim(min_y_val, max_y_val)
 
-    ax.set_aspect(20, adjustable='box') # Y-axis compressed 20x relative to X-axis
+    # Set y-axis scale at 2:1 ratio to the x-axis
+    # This means one unit on the Y-axis is visually twice as long as one unit on the X-axis.
+    # In Matplotlib, aspect = Y_scale / X_scale. So for Y:X = 2:1, aspect = 2/1 = 2.
+    ax.set_aspect(2, adjustable='box') 
     plt.show()
-
-def plot_console_trajectory(trajectory_points, scope_height_m, target_range_m, target_angle_deg, target_height_m, system_units):
-    """
-    Generates a simple text-based graph of the bullet trajectory.
-    """
-    print("\n--- Console Trajectory Graph ---")
-
-    # Convert coordinates if Imperial units are selected for display
-    unit_factor = 1.0 # default to meters
-    distance_unit_label = "m"
-    if system_units == 'IMPERIAL':
-        unit_factor = 1.0 / YD_TO_M # meters to yards
-        distance_unit_label = "yd"
-
-    # Calculate target's vertical position based on target_angle_deg
-    target_elevation_m_at_range = math.tan(math.radians(target_angle_deg)) * target_range_m
-
-    # Adjust trajectory points for plotting units
-    traj_points_plot = [(p[0] * unit_factor, p[1] * unit_factor) for p in trajectory_points]
-    
-    # Define graph dimensions
-    graph_width = 80 # characters
-    graph_height = 20 # characters
-
-    # Determine data bounds for scaling
-    min_x = 0
-    max_x = max(p[0] for p in traj_points_plot) if traj_points_plot else 100 * unit_factor
-    max_x = max(max_x, target_range_m * unit_factor * 1.1)
-
-    min_y = min(0, min(p[1] for p in traj_points_plot) if traj_points_plot else 0, scope_height_m * unit_factor, target_elevation_m_at_range * unit_factor) * 1.1
-    max_y = max(max(p[1] for p in traj_points_plot) if traj_points_plot else 0, scope_height_m * unit_factor, (target_elevation_m_at_range + target_height_m) * unit_factor) * 1.1
-    
-    # Avoid zero range for scaling
-    if max_x - min_x < 1e-6: max_x += 10 * unit_factor
-    if max_y - min_y < 1e-6: max_y += 2 * unit_factor # Give some vertical spread
-
-    # Create empty graph grid
-    grid = [[' ' for _ in range(graph_width)] for _ in range(graph_height)]
-
-    # Plot ground lines and shooter/target positions
-    # Shooter's position (origin of graph)
-    shooter_y_grid = int((0 - min_y) / (max_y - min_y) * (graph_height - 1))
-    # Make sure shooter_y_grid is within bounds
-    shooter_y_grid = max(0, min(graph_height - 1, shooter_y_grid))
-    
-    grid[graph_height - 1 - shooter_y_grid][0] = 'S' # Shooter at x=0
-
-    # Target position
-    target_x_grid = int((target_range_m * unit_factor - min_x) / (max_x - min_x) * (graph_width - 1))
-    # Ensure target_x_grid is within bounds
-    target_x_grid = max(0, min(graph_width - 1, target_x_grid))
-
-    target_mid_y_grid = int((target_elevation_m_at_range * unit_factor + TARGET_MIDPOINT_M * unit_factor - min_y) / (max_y - min_y) * (graph_height - 1))
-    target_bottom_y_grid = int((target_elevation_m_at_range * unit_factor - min_y) / (max_y - min_y) * (graph_height - 1))
-    
-    # Plot target body
-    for y_idx in range(graph_height - 1 - target_bottom_y_grid, graph_height - 1 - int((target_elevation_m_at_range * unit_factor + target_height_m * unit_factor - min_y) / (max_y - min_y) * (graph_height - 1)) -1, -1):
-        if 0 <= y_idx < graph_height:
-            grid[y_idx][target_x_grid] = '|' # Target body
-    # Plot target midpoint
-    if 0 <= target_mid_y_grid < graph_height:
-         grid[graph_height - 1 - target_mid_y_grid][target_x_grid] = 'T' # Target midpoint
-
-
-    # Plot trajectory points
-    for x_val, y_val in traj_points_plot:
-        x_grid = int((x_val - min_x) / (max_x - min_x) * (graph_width - 1))
-        y_grid = int((y_val - min_y) / (max_y - min_y) * (graph_height - 1))
-        
-        # Ensure grid coordinates are within bounds
-        x_grid = max(0, min(graph_width - 1, x_grid))
-        y_grid = max(0, min(graph_height - 1, y_grid))
-
-        if grid[graph_height - 1 - y_grid][x_grid] == ' ': # Don't overwrite S or T
-            grid[graph_height - 1 - y_grid][x_grid] = '*'
-
-    # Print the grid
-    for row in grid:
-        print("".join(row))
-
-    print(f"Distance: 0 to {max_x:.0f}{distance_unit_label} | Height: {min_y:.0f} to {max_y:.0f}{distance_unit_label}")
-    print("S: Shooter, T: Target Midpoint, *: Bullet Trajectory, |: Target Body")
-    print("------------------------------")
 
 
 # ==============================================================================
@@ -1126,7 +1080,13 @@ def main():
                 # Plot if requested
                 if plot_matplotlib_requested:
                     if MATPLOTLIB_AVAILABLE:
-                        plot_trajectory(trajectory_points, solution_angle, derived_profile['scope_height_m'], target_range_m, target_angle_deg, TARGET_HEIGHT_M, derived_profile['scope_zero_m'], los_intersection_points, system_units)
+                        # Pass the barrel_angle_for_zero_m to the plot function
+                        # It was calculated inside solve_for_angle and used to get los_intersection_points
+                        # For plotting, we need it to draw the zeroing LOS properly.
+                        # Re-calculate it here or pass it from solve_for_angle return (more efficient).
+                        # Let's pass it from solve_for_angle's context for now as it's a property of the profile/setup.
+                        barrel_angle_for_zero = _find_zero_barrel_angle(derived_profile, air_density, derived_profile['scope_height_m'], derived_profile['scope_zero_m'])
+                        plot_trajectory(trajectory_points, solution_angle, derived_profile['scope_height_m'], target_range_m, target_angle_deg, TARGET_HEIGHT_M, derived_profile['scope_zero_m'], los_intersection_points, system_units, barrel_angle_for_zero)
                     else:
                         print("Plotting requested, but Matplotlib is not installed.")
                 elif plot_console_requested:
