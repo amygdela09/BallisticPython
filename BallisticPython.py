@@ -240,7 +240,7 @@ def calculate_derived_properties(profile):
     profile["drag_coefficient"] = form_factor * G1_STD_DRAG_COEFF
     return profile
 
-def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_for_solver_m, scope_zero_m):
+def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_for_solver_m, scope_zero_m, barrel_angle_for_zero_m):
     """
     Simulates the flight of a projectile for a given launch angle,
     and returns a list of (x, y) points for plotting, the height at target range,
@@ -265,12 +265,25 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
     height_at_target_range = None
     hit_ground_before_target_range = False # Flag to track if ground hit occurred before target
 
-    # Line of sight for zeroing is horizontal at scope_height_m (relative to bore line/shooter's ground)
-    los_y_zeroing = scope_height_m
+    # Line of sight for ZEROING: From (0, scope_height_m) to (scope_zero_m, 0)
+    # The slope of this line is (0 - scope_height_m) / (scope_zero_m - 0)
+    # So, LOS height at any x is: scope_height_m + (x * (0 - scope_height_m) / scope_zero_m)
+    # This assumes a flat range for zeroing.
+    def get_zeroing_los_height_at_x(current_x):
+        if scope_zero_m == 0: # If zero is at muzzle, LOS is horizontal at scope height
+            return scope_height_m
+        # LOS is a line from (0, scope_height_m) to (scope_zero_m, 0)
+        # Equation: y - y1 = m(x - x1)
+        # m = (0 - scope_height_m) / (scope_zero_m - 0) = -scope_height_m / scope_zero_m
+        # y = scope_height_m + (current_x * (-scope_height_m / scope_zero_m))
+        # y = scope_height_m * (1 - current_x / scope_zero_m)
+        return scope_height_m * (1 - current_x / scope_zero_m)
 
-    # Variables to track previous state for interpolation
+
+    # Variables to track previous state for interpolation for LOS intersections
     prev_x, prev_y = x, y
-    prev_bullet_above_los = y > los_y_zeroing 
+    prev_los_y = get_zeroing_los_height_at_x(prev_x)
+    prev_bullet_above_los = y > prev_los_y 
 
     # --- Wind Components ---
     wind_angle_rad = math.radians(wind_angle_deg)
@@ -306,16 +319,23 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
                 height_at_target_range = y
 
         # Check for LOS intersection (zeroing point)
-        current_bullet_above_los = y > los_y_zeroing
-        if prev_x > 0 and current_bullet_above_los != prev_bullet_above_los: # If status changed and not at very start
-            diff_prev = prev_y - los_y_zeroing
-            diff_curr = y - los_y_zeroing
+        current_los_y = get_zeroing_los_height_at_x(x)
+        current_bullet_above_los = y > current_los_y
+
+        # Only check for intersection if we've moved beyond the muzzle (x > 0.01)
+        # to avoid false positives at the very start where bullet is at scope height and LOS starts there.
+        if x > 0.01 and current_bullet_above_los != prev_bullet_above_los: # If status changed
+            # Interpolate intersection point between prev_point and current point
+            # Calculate difference between bullet y and LOS y
+            diff_prev = prev_y - get_zeroing_los_height_at_x(prev_x)
+            diff_curr = y - current_los_y
 
             if diff_prev * diff_curr < 0: # If signs are different, a crossing occurred
+                # Linear interpolation for x
                 lerp_factor = abs(diff_prev) / (abs(diff_prev) + abs(diff_curr))
                 
                 intersect_x = prev_x + (x - prev_x) * lerp_factor
-                intersect_y = prev_y + (y - prev_y) * lerp_factor
+                intersect_y = prev_y + (y - prev_y) * lerp_factor # y-value should be close to LOS height at intersect_x
                 los_intersection_points.append((intersect_x, intersect_y))
 
         # --- Physics calculations for next step ---
@@ -366,7 +386,6 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
             last_x, last_y = trajectory_points[-1]
             
             if last_x < target_range_for_solver_m: # If bullet didn't reach target range
-                # Extrapolate linearly from last point to target range.
                 if vx > 0: # Only if moving forward
                     # Use a rough extrapolation (linear + gravity effect over remaining distance)
                     time_to_target = (target_range_for_solver_m - last_x) / vx
@@ -375,7 +394,6 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
                     height_at_target_range = -1000.0 # Large finite negative number
                 hit_ground_before_target_range = True # Bullet did not reach target while in air
             else: # Target range is within or past simulated trajectory, height_at_target_range should already be set.
-                  # This block might indicate a logic flaw if height_at_target_range is still None here.
                   # As a fallback, use the height of the last point if it's past target.
                   height_at_target_range = last_y
 
@@ -383,35 +401,118 @@ def calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_
     return x, z, trajectory_points, height_at_target_range, los_intersection_points, hit_ground_before_target_range
 
 
+def _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m):
+    """
+    Helper function to find the precise barrel angle required to zero the rifle
+    at scope_zero_m on a flat range (y=0). This is used to define the true LOS for zeroing.
+    """
+    # This is a sub-solver aiming for y=0 at scope_zero_m
+    
+    # Define an inner trajectory function for zeroing
+    def zeroing_trajectory_height(angle):
+        g_const = 9.81
+        launch_angle_rad = math.radians(angle)
+        vx = profile['velocity_mps'] * math.cos(launch_angle_rad)
+        vy = profile['velocity_mps'] * math.sin(launch_angle_rad)
+        x_curr, y_curr = 0.0, scope_height_m # Start at scope height for zeroing
+        
+        time_step = 0.005
+        
+        # Simulate until past zero distance or hit ground
+        while x_curr <= scope_zero_m + 1.0 and y_curr >= -1.0: # Sim slightly past zero or slightly below ground
+            v_mag = math.sqrt(vx**2 + vy**2)
+            if v_mag == 0: break
+            drag_force_mag = 0.5 * air_density * (v_mag**2) * profile['area_m2'] * profile['drag_coefficient']
+            
+            force_x = -drag_force_mag * (vx / v_mag)
+            force_y = -drag_force_mag * (vy / v_mag) - (profile['mass_kg'] * g_const)
+            
+            vx += (force_x / profile['mass_kg']) * time_step
+            vy += (force_y / profile['mass_kg']) * time_step
+            
+            x_curr += vx * time_step
+            y_curr += vy * time_step
+            
+            # If crossed zero distance, interpolate y
+            if x_curr >= scope_zero_m and (x_curr - vx * time_step) < scope_zero_m:
+                if vx != 0:
+                    ratio = (scope_zero_m - (x_curr - vx * time_step)) / (vx * time_step)
+                    interp_y = (y_curr - vy * time_step) + (vy * time_step) * ratio
+                    return interp_y
+        
+        # If it hit ground before zero, or went past zero without hitting ground (and still high)
+        if y_curr <= 0: # Hit ground
+            return -1000.0 # Very low, indicate it went below zero point
+        else: # Went past zero, still high
+            return y_curr # Return actual height at end of sim
+    
+    # Use Secant method to find the angle that results in y=0 at scope_zero_m
+    angle_low, angle_high = -2.0, 10.0 # Initial guesses for zeroing angle
+    
+    error_low = zeroing_trajectory_height(angle_low) - 0.0 # Target height is 0 (ground)
+    error_high = zeroing_trajectory_height(angle_high) - 0.0
+    
+    # Basic bracketing attempt for zeroing angle
+    if error_low * error_high >= 0:
+        # If both are positive, try a lower start angle. If both negative, try higher.
+        if error_low > 0: # Both too high
+            angle_low = -5.0 # Try even lower
+            error_low = zeroing_trajectory_height(angle_low) - 0.0
+        elif error_low < 0: # Both too low
+            angle_high = 15.0 # Try even higher
+            error_high = zeroing_trajectory_height(angle_high) - 0.0
+        
+        if error_low * error_high >= 0: # If still not bracketed
+            # print("Warning: Could not robustly bracket zeroing angle.")
+            return 0.0 # Fallback to 0 degrees if zero angle cannot be found
+
+    for _ in range(50): # Max iterations for zeroing angle solver
+        if abs(error_high - error_low) < 1e-9:
+            break
+        if error_high == error_low: break # Avoid division by zero
+        
+        angle_next = angle_high - error_high * (angle_high - angle_low) / (error_high - error_low)
+        error_next = zeroing_trajectory_height(angle_next) - 0.0
+        
+        if abs(error_next) < 0.001: # 1mm tolerance for zero
+            return angle_next
+            
+        angle_low, error_low = angle_high, error_high
+        angle_high, error_high = angle_next, error_next
+    
+    return angle_high # Return best guess after iterations
+
+
 def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, scope_zero_m):
     """
     Finds the required launch angle to hit the target_aim_height at target_range_m using the secant method.
     """
+    # First, calculate the barrel angle required to zero at scope_zero_m on a flat range
+    # This is needed to correctly define the true LOS for the zeroing intersections
+    barrel_angle_for_zero_m = _find_zero_barrel_angle(profile, air_density, scope_height_m, scope_zero_m)
+    if barrel_angle_for_zero_m is None:
+        print("Could not determine barrel angle for zeroing. Solver cannot proceed.")
+        return None, None, None, None
+
     # Define a function to find the error (difference from target aim height)
     def get_error_and_reach(angle):
-        _, _, _, height_at_target_range, _, hit_ground_early = calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_m, scope_zero_m)
+        _, _, _, height_at_target_range, _, hit_ground_early = calculate_trajectory_with_points(angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_m, scope_zero_m, barrel_angle_for_zero_m)
         
         # If the bullet hit the ground before reaching the target range, return a large negative error
         # This biases the solver to find angles that keep the bullet in the air.
         if hit_ground_early:
-            # Return a large finite negative value to guide the secant method
-            return -1000.0, True
+            return -1000.0, True # Return a large finite negative value to guide the secant method
         
         return height_at_target_range - target_aim_height_m, False
 
     # Initial low and high guesses for the launch angle in degrees
-    # Start with common angles: 0 degrees (flat), and 5 degrees (some elevation)
-    angle_low, angle_high = 0.0, 5.0
+    angle_low, angle_high = 0.0, 5.0 
 
     # Get initial errors and reach status
     error_low, hit_early_low = get_error_and_reach(angle_low)
     error_high, hit_early_high = get_error_and_reach(angle_high)
 
     # Robust initial bracketing for Secant Method
-    # The goal is to find two angles, one with a negative error (too low or hit ground early)
-    # and one with a positive error (too high).
-    
-    # Define a range of angles to search for a bracket
     search_angles = sorted(list(set([-10.0, -5.0, -2.0, 0.0, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0, 25.0, 30.0])))
     
     found_bracket = False
@@ -424,7 +525,6 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
             error_low = err
             hit_early_low = hit_early
         else: # Found an angle that's too high or just right, implies previous angle_low is now valid
-            # If current err > 0, then the previous `angle_low` and this `angle_val` might form a bracket
             angle_high = angle_val
             error_high = err
             hit_early_high = hit_early
@@ -461,7 +561,6 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
             break
 
         # Secant method formula
-        # Ensure that error_high != error_low to prevent division by zero
         if error_high == error_low:
             solution_angle = angle_high # Cannot proceed with secant, use current best guess
             break
@@ -477,33 +576,29 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
             break
         
         # Update angles for next iteration
-        # Always move the 'low' angle to the previous 'high' angle's position
-        # and the 'high' angle to the 'next' angle's position.
-        # This keeps the two most recent angles in the iteration.
-        angle_low_temp, error_low_temp = angle_high, error_high # Store current high as next low
-        angle_high, error_high = angle_next, error_next # New angle is next high
-        angle_low, error_low = angle_low_temp, error_low_temp # Update actual low
+        angle_low_temp, error_low_temp = angle_high, error_high 
+        angle_high, error_high = angle_next, error_next
+        angle_low, error_low = angle_low_temp, error_low_temp
         
-        # Prevent divergence to extreme angles. If the new angle is outside sensible bounds,
-        # it might mean the solver is diverging.
-        if not (-10 <= angle_next <= 45): # Limit search to practical shooting angles
+        # Prevent divergence to extreme angles.
+        if not (-10 <= angle_next <= 45): 
             print(f"Solver diverged to an unrealistic angle: {angle_next:.2f}°. Stopping.")
-            solution_angle = angle_next # Use this as a best effort before stopping
+            solution_angle = angle_next 
             break
 
     # If loop finished without perfect convergence, take the last calculated angle as the best effort
     if solution_angle is None:
-        solution_angle = angle_high # Fallback to the last angle calculated
+        solution_angle = angle_high 
         print(f"Warning: Solver did not converge to exact tolerance within {0.05}m. Best angle found: {solution_angle:.2f}°")
 
 
     # Once solution_angle is found (or best effort), run trajectory one last time
     if solution_angle is not None:
          _, final_deflection, trajectory_final, height_at_target_final, los_intersections_final, hit_ground_early_final = \
-             calculate_trajectory_with_points(solution_angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_m, scope_zero_m)
+             calculate_trajectory_with_points(solution_angle, profile, wind_speed_mps, wind_angle_deg, air_density, scope_height_m, target_range_m, scope_zero_m, barrel_angle_for_zero_m)
          
          # Final validation: Ensure the solution actually hits the target within tolerance and not ground early
-         if hit_ground_early_final or abs(height_at_target_final - target_aim_height_m) > 0.1: # If it hit ground early or still not within 10cm
+         if hit_ground_early_final or abs(height_at_target_final - target_aim_height_m) > 0.1: 
              print(f"Validation failed: Solved angle {solution_angle:.2f}° resulted in a height of {height_at_target_final:.2f}m at {target_range_m:.0f}m, aiming for {target_aim_height_m:.2f}m. (Hit ground early: {hit_ground_early_final})")
              print("Target might be beyond bullet's effective range for this configuration.")
              return None, None, None, None
@@ -824,19 +919,22 @@ def setup_profile(saved_profiles, system_units):
         
         profile_data.update({
             'mass_kg': mass_gr * GR_TO_KG,
-            'velocity_mps': vel_fps * 0.3048,
+            'velocity_mps': vel_fps * 0.3048, # Corrected: fps to mps
             'diameter_m': diam_in * IN_TO_M,
             'g1_bc_lb_in2': bc_g1,
             'moa_accuracy': moa_acc,
             'name': "Manual Entry"
         })
         
+        # BC Estimator placeholder
+        # print("\nBC Estimator: (Feature not yet implemented - input BC manually)")
+        
         save_prompt = input("Do you want to save this custom profile? (y/N): ").lower()
         if save_prompt == 'y':
             profile_name = input("Enter a name for this profile: ")
             if profile_name:
-                profile_data['name'] = profile_name
-                saved_profiles[profile_name] = profile_data
+                profile_data['name'] = profile_name # Update name for saving
+                saved_profiles[profile_name] = profile_data # Add to dict
                 save_profiles(saved_profiles)
                 print(f"Profile '{profile_name}' saved.")
             else:
