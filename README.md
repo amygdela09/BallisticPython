@@ -2,18 +2,6 @@
 
 A command-line ballistic calculator in Python. Get precise firing solutions for long-range shooting by simulating trajectory with environmental factors, custom rifle profiles, and trajectory visualization.
 
-## Table of Contents
-- [Features](#features)
-- [How It Works](#how-it-works)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Quick Start](#quick-start)
-  - [Command-Line Arguments](#command-line-arguments)
-  - [In-App Commands](#in-app-commands)
-- [Profile Management](#profile-management)
-- [Contributing](#contributing)
-- [License](#license)
-
 ## Features
 
 This program is designed to be both powerful and flexible, incorporating features essential for accurate long-range calculations:
@@ -40,59 +28,19 @@ This program is designed to be both powerful and flexible, incorporating feature
     -   **Console Graph (`g` flag):** Instantly generate a simple text-based graph of the trajectory in your terminal.
     -   **Matplotlib Plot (`p` flag):** For more detail, generate a high-quality plot in a separate window, showing the bullet's path, line of sight, barrel angle, ground terrain (including slope to target), and marked zero intersection points. This feature is optional and requires Matplotlib installation.
 
-## How It Works
+## Contributing
 
-The program uses a numerical method to simulate the bullet's flight step-by-step.
+Contributions are welcome! If you have suggestions for new features, improvements to the physics model, or bug fixes, please feel free to open an issue or submit a pull request.
 
-1.  **Angle Solving:** When you input a target range and angle, the script uses a **Secant Method root-finding algorithm**. It makes initial guesses for the barrel's launch angle and runs full trajectory simulations. It checks if the bullet's height at the target range is above or below the desired target height (midpoint). Based on this "error," it refines its guess, rapidly converging on the precise angle where the bullet's path will intersect the target's coordinates. It also ensures the bullet remains in the air until the target range is reached.
-2.  **Trajectory Simulation:** Each simulation uses **Euler integration** over small time steps (0.005s). In each step, it calculates the net forces on the projectile:
-    * **Gravity:** A constant downward acceleration.
-    * **Drag:** A force opposing the direction of motion, calculated using the standard drag equation `Fd = 0.5 * ρ * v² * A * Cd`, where the drag coefficient `Cd` is derived from the bullet's G1 Ballistic Coefficient.
-    * **Wind:** A force applied perpendicular (crosswind) or parallel (headwind/tailwind) to the initial direction of fire.
-3.  **Final Solution:** Once the correct launch angle is found, the script calculates the difference between this angle and the angle required for your rifle's zero. This difference is your final scope adjustment (your "dial").
+Areas for future improvement include:
+-   **G7 Ballistic Coefficient Support:** Implement drag models and calculations for G7 BCs, which are more accurate for modern, long-range projectiles.
+-   **Spin Drift Calculation:** Incorporate the effect of bullet spin, which causes a small horizontal deflection over long distances.
+-   **Coriolis Effect:** Account for the Earth's rotation impacting projectile trajectory over very long ranges.
+-   **Full Drop Charts/Dope Cards:** Generate printable tables of holdovers and windage for various distances.
+-   **BC Estimator Refinement:** Develop a more robust and accurate ballistic coefficient estimator based on projectile dimensions and known bullet types.
+-   **Advanced Wind Models:** Implement more sophisticated wind inputs (e.g., full value, half value, different wind zones).
+-   **Target Customization:** Allow users to define custom target sizes and shapes for hit probability calculations.
 
-## Installation
+## License
 
-1.  **Python:** Ensure you have Python 3.6 or newer installed on your system.
-
-2.  **Matplotlib (Optional):** This library is required *only* if you want to use the detailed plotting feature (`p` flag). If you don't need it, the script will still run perfectly without it.
-    ```bash
-    pip install matplotlib
-    ```
-
-3.  **SciPy (Optional):** This library is recommended for more precise hit probability calculations. If not installed, a less precise approximation will be used.
-    ```bash
-    pip install scipy
-    ```
-
-4.  **Download:** Download the `ballistic_solver.py` script to a directory on your computer.
-
-## Usage
-
-### Quick Start
-
-1.  Open a terminal or command prompt.
-2.  Navigate to the directory where you saved the file.
-3.  Run the script with `python ballistic_solver.py`.
-4.  Follow the on-screen prompts to set up your unit system, rifle profile, and environment.
-5.  At the main prompt, enter your target data to get a firing solution.
-
-### Command-Line Arguments (In-App Input)
-
-The main input prompt expects data in the following format:
-
-`[Range] [Wind Speed] [Wind Angle] [Target Angle] (optional: g/p)`
-
-| Parameter        | Description                                                                                             | Example      |
-| :--------------- | :------------------------------------------------------------------------------------------------------ | :----------- |
-| `[Range]`        | The distance to the target (in your chosen system units, e.g., yards or meters).                        | `850`        |
-| `[Wind Speed]`   | The wind speed in miles per hour (mph).                                                                 | `10`         |
-| `[Wind Angle]`   | The wind direction in degrees (0=headwind, 90=right crosswind, 180=tailwind, 270=left crosswind).       | `270`        |
-| `[Target Angle]` | The uphill/downhill angle to the target in degrees (positive for uphill, negative for downhill).        | `-5`         |
-| `(g/p)`          | **Optional.** A flag to generate a visual representation of the trajectory.                               | `p`          |
-|                  | `g`: Generates a simple text-based **g**raph in the console.                                            |              |
-|                  | `p`: Generates a detailed Matplotlib **p**lot in a new window.                                           |              |
-
-**Full Example:**
-```bash
-850 10 270 -5 p
+This project is licensed under the MIT License. See the `LICENSE` file for details.
