@@ -518,12 +518,6 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
         
         return height_at_target_range - target_aim_height_m, False
 
-    # Initialize solution_angle, final_deflection, trajectory_final, and los_intersections_final
-    solution_angle = None
-    final_deflection = None
-    trajectory_final = []
-    los_intersections_final = [] # Initialize as an empty list
-
     # Initial low and high guesses for the launch angle in degrees
     angle_low, angle_high = 0.0, 5.0 
 
@@ -565,12 +559,13 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
     # Final check for a valid bracket (one error negative/hit_early, one positive/not hit_early)
     if not found_bracket or (error_low * error_high >= 0 and not (hit_early_low and error_high > 0)):
         print("Target is likely out of effective range (cannot find an angle that keeps the bullet in the air long enough, or it's always too high/low).")
-        return None, None, [], [] # Return empty lists if no solution
+        return None, None, None, None
 
     print(f"Initial bracket: Angle range [{angle_low:.2f}°, {angle_high:.2f}°] (Errors: {error_low:.2f}, {error_high:.2f})")
 
 
     # Iterate to refine the angle guess using Secant Method
+    solution_angle = None
     
     for i in range(50): # Increased iterations for Secant precision
         # Prevent division by zero or extremely small denominator
@@ -619,11 +614,12 @@ def solve_for_angle(target_range_m, target_aim_height_m, profile, wind_speed_mps
          if hit_ground_early_final or abs(height_at_target_final - target_aim_height_m) > 0.1: 
              print(f"Validation failed: Solved angle {solution_angle:.2f}° resulted in a height of {height_at_target_final:.2f}m at {target_range_m:.0f}m, aiming for {target_aim_height_m:.2f}m. (Hit ground early: {hit_ground_early_final})")
              print("Target might be beyond bullet's effective range for this configuration.")
-             return None, None, [], [] # Return empty lists if validation fails
+             return None, None, None, None
 
-         return solution_angle, final_deflection, trajectory_final, los_intersections_final
+         return solution_angle, final_deflection, trajectory_final, los_intersections_final # Return final intersections
 
-    return None, None, [], [] # Return None and empty lists if the solver fails to converge on a solution
+
+    return None, None, None, None # Return None if the solver fails to converge on a solution
 
 
 def calculate_hit_probability(moa_accuracy, target_range_m, target_height_m, target_width_m):
@@ -765,36 +761,31 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     los_intersection_points_plot = [(p[0] * unit_factor, p[1] * unit_factor) for p in los_intersection_points]
     los_intersection_points_plot.sort(key=lambda p: p[0])
 
-    marked_primary_zero = False # To track if the primary zero has been marked with the special icon
+    marked_zero_count = 0
     for i_x, i_y in los_intersection_points_plot:
         # Check if this point is close to the defined scope_zero_m
-        # Using a slightly more robust check for primary zero, and ensure it's not the initial 0m mark if scope_zero_m is not 0
-        is_primary_zero = (abs(i_x - scope_zero_plot) < (scope_zero_plot * 0.02 + 0.1) and scope_zero_plot != 0) or (scope_zero_plot == 0 and i_x < 5 * unit_factor and i_x > -0.1) # Within 2% or 0.1m, or near 0 for 0m zero
+        is_primary_zero = abs(i_x - scope_zero_plot) < (scope_zero_plot * 0.02) or (scope_zero_plot == 0 and i_x < 5 * unit_factor)
         
-        label_str = ''
-        marker_style = 'x' # Default for general LOS crossings
-        marker_color = 'darkgreen'
-        marker_size = 10
-        marker_edge = 2
-
-        if is_primary_zero and not marked_primary_zero:
-            label_str = f'Primary Zero ({i_x:.0f}{distance_unit_label})'
-            marker_style = 'X' # Capital X for primary zero
+        label_str_suffix = '' # Suffix for the label, e.g., "(50yd)"
+        if is_primary_zero and marked_zero_count == 0:
+            label_str_base = 'Primary Zero'
             marker_color = 'darkorange'
             marker_size = 12
             marker_edge = 2
-            marked_primary_zero = True
-        elif i_x > 0.01: # Mark other positive crossings as 'LOS Crossing'
-            label_str = f'LOS Crossing ({i_x:.0f}{distance_unit_label})'
-        elif i_x <= 0.01 and i_x > -1.0: # Mark initial close-to-muzzle intersection
-            label_str = f'Initial LOS Crossing ({i_x:.0f}{distance_unit_label})'
-
-        if label_str: # Only add if we have a label
-            ax.plot(i_x, i_y, marker=marker_style, color=marker_color, markersize=marker_size, markeredgewidth=marker_edge)
-            # Dynamic offset based on plot height
-            offset_y = (max(traj_y) - min(traj_y) if traj_y else 1) * 0.05 
-            ax.text(i_x, i_y + offset_y, label_str.split('(')[0].strip(),
-                    verticalalignment='bottom', horizontalalignment='center', color=marker_color, fontsize=9)
+            marked_zero_count += 1
+        else:
+            label_str_base = 'LOS Crossing'
+            marker_color = 'darkgreen'
+            marker_size = 10
+            marker_edge = 2
+        
+        # Add the point
+        ax.plot(i_x, i_y, marker='X', color=marker_color, markersize=marker_size, markeredgewidth=marker_edge)
+        
+        # Add text label for each marked point (without adding to legend multiple times)
+        offset_y = (max(traj_y) - min(traj_y) if traj_y else 1) * 0.05 
+        ax.text(i_x, i_y + offset_y, f"{label_str_base} ({i_x:.0f}{distance_unit_label})",
+                verticalalignment='bottom', horizontalalignment='center', color=marker_color, fontsize=9)
 
 
     # --- Labels and Title ---
@@ -802,40 +793,40 @@ def plot_trajectory(trajectory_points, barrel_angle_deg, scope_height_m, target_
     ax.set_ylabel(f"Height Above Shooter's Ground ({distance_unit_label})")
     ax.set_title("Bullet Trajectory Simulation")
     
-    # Consolidate duplicate labels for the legend
+    # Handle custom legend entries for X markers separately
     legend_handles = []
     legend_labels = []
 
-    # Add handles/labels for lines (from ax.plot)
+    # Get handles/labels for lines (existing legend logic)
     handles, labels = ax.get_legend_handles_labels()
     unique_labels_lines = []
     unique_handles_lines = []
+    # Add unique line labels/handles
     for h, l in zip(handles, labels):
         if l not in unique_labels_lines:
             unique_labels_lines.append(l)
             unique_handles_lines.append(h)
     
-    # Manually add proxy artists for the 'X' markers to ensure they appear in the legend
-    proxy_primary_zero = plt.Line2D([0], [0], linestyle='None', marker='X', markersize=12, markeredgewidth=2, color='darkorange')
-    proxy_los_crossing = plt.Line2D([0], [0], linestyle='None', marker='x', markersize=10, markeredgewidth=2, color='darkgreen')
+    # Add a dummy entry for the primary zero to the legend if not already there
+    # This might add duplicates if the label string is the same as one already printed
+    # Let's ensure the label used in ax.text doesn't conflict with main legend.
+    # Instead of labels from ax.plot, we'll manually add specific ones if needed.
     
-    # Add unique marker labels/handles
-    legend_handles.extend(unique_handles_lines)
-    legend_labels.extend(unique_labels_lines)
-
-    if not marked_primary_zero: # Only add this if no primary zero was actually marked (e.g. if scope_zero_m was 0)
-        # This condition helps ensure "Primary Zero" only appears if an orange X was actually used.
-        pass # The logic below will handle the LOS Crossing entry.
-    else:
+    # For primary zero, manually add a legend entry if marked
+    if marked_zero_count > 0: # Implies a primary zero was marked
+        # Create a proxy artist for the legend entry for the primary zero
+        proxy_primary_zero = plt.Line2D([0], [0], linestyle='None', marker='X', markersize=12, markeredgewidth=2, color='darkorange')
         legend_handles.append(proxy_primary_zero)
         legend_labels.append('Primary Zero')
     
-    # Always add a general LOS crossing marker legend entry if there are any crossings at all
-    if any(p[0] > 0.01 for p in los_intersection_points_plot): # If there was at least one crossing detected
-        legend_handles.append(proxy_los_crossing)
-        legend_labels.append('LOS Crossing')
+    # Create a proxy artist for general LOS crossings
+    proxy_los_crossing = plt.Line2D([0], [0], linestyle='None', marker='x', markersize=10, markeredgewidth=2, color='darkgreen')
+    legend_handles.append(proxy_los_crossing)
+    legend_labels.append('LOS Crossing')
 
-    ax.legend(legend_handles, legend_labels)
+
+    # Combine and show legend
+    ax.legend(unique_handles_lines + legend_handles, unique_labels_lines + legend_labels)
     ax.grid(True)
     
     # --- Adjust Aspect Ratio ---
@@ -1019,13 +1010,13 @@ def main():
     print("\n--- Ready for Firing Solution ---")
     print(f"Profile: {derived_profile['name']} | Scope Unit: {scope_unit} | Air Density: {air_density:.4f} kg/m^3 | Accuracy: {derived_profile['moa_accuracy']} MOA | Scope Height: {derived_profile['scope_height_m']/IN_TO_M:.1f} in | Scope Zero: {derived_profile['scope_zero_m']/YD_TO_M:.0f} yd")
     print("\nCommands: 'profile', 'env', 'manage', 'quit'")
-    print(f"Input Format: [Range {distance_unit_display}] [Wind mph] [Wind deg] [Target Angle deg] [optional g/p]")
+    print(f"Input Format: [Range {distance_unit_display}] [Wind mph] [Wind deg] [Target Angle deg] [optional p]")
 
 
     # --- Main Calculation Loop ---
     while True:
         try:
-            prompt_str = f"Enter [Range {distance_unit_display}] [Wind mph] [Wind deg] [Target Angle deg] [optional g/p]: "
+            prompt_str = f"Enter [Range {distance_unit_display}] [Wind mph] [Wind deg] [Target Angle deg] [optional p]: "
             user_input = input(prompt_str).strip()
 
             # --- Handle In-App Commands ---
@@ -1050,15 +1041,11 @@ def main():
                 print("Invalid input. Please provide at least four values (range, wind speed, wind direction, target angle).")
                 continue
 
-            # Check for plotting flags ('g' or 'p')
-            plot_console_requested = False
+            # Check for plotting flags ('p')
             plot_matplotlib_requested = False
             if len(parts) > 4:
                 plot_flag = parts[-1].lower()
-                if plot_flag == 'g':
-                    plot_console_requested = True
-                    parts = parts[:-1]
-                elif plot_flag == 'p':
+                if plot_flag == 'p':
                     plot_matplotlib_requested = True
                     parts = parts[:-1]
 
@@ -1131,15 +1118,13 @@ def main():
                         plot_trajectory(trajectory_points, solution_angle, derived_profile['scope_height_m'], target_range_m, target_angle_deg, TARGET_HEIGHT_M, derived_profile['scope_zero_m'], los_intersection_points, system_units, barrel_angle_for_zero)
                     else:
                         print("Plotting requested, but Matplotlib is not installed.")
-                elif plot_console_requested:
-                    plot_console_trajectory(trajectory_points, derived_profile['scope_height_m'], target_range_m, target_angle_deg, TARGET_HEIGHT_M, system_units)
 
             else:
                 # If the solver returns None, the target is unreachable
                 print("  SOLUTION NOT FOUND. Target may be out of range or parameters too extreme.")
 
         except (ValueError, IndexError) as e:
-            print(f"Input Error: {e}. Please use: <range> <wind_speed> <wind_angle> <target_angle> [optional g/p]")
+            print(f"Input Error: {e}. Please use: <range> <wind_speed> <wind_angle> <target_angle> [optional p]")
         except Exception as e:
             # Catch any other unexpected errors
             print(f"An unexpected error occurred: {e}")
